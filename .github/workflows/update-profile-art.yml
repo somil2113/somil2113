@@ -23,11 +23,16 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r scripts/requirements.txt
+        # Heatmap path only needs these; avoids heavy rembg install in CI
+        run: pip install requests beautifulsoup4
 
       - name: Fetch contributions
         env:
           GITHUB_USERNAME: ${{ github.repository_owner }}
+          # Prefer repo secret CONTRIB_TOKEN (classic PAT with read:user) for private contribs.
+          # GITHUB_TOKEN falls back to public-only calendar data.
+          CONTRIB_TOKEN: ${{ secrets.CONTRIB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python scripts/fetch_contributions.py
 
       - name: Render heatmap SVG
