@@ -29,7 +29,6 @@ FG = "#d4c4ff"
 CURSOR = "#b48cff"
 
 # Pixels this bright *and* connected to the image border count as backdrop
-BG_SEED = 248
 BG_LOOSE = 236
 
 
