@@ -2,6 +2,9 @@
 """
 Generate animated ASCII SVG portrait (monochrome purple terminal theme).
 
+Maps dark subject pixels to dense glyphs and light/white background to spaces
+so the portrait reads clearly on a dark terminal background.
+
 Usage:
   python scripts/make_ascii_svg.py [--input source-prepped.png] [--output avi-ascii.svg]
 
@@ -17,45 +20,95 @@ import os
 import sys
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps, ImageFilter
 
-# Brightness ramp (leading space = darkest)
-RAMP = " .`:-=+*cs#%@"
+# Brightness ramp: space = empty bg, @ = densest subject ink
+RAMP = " .:-=+*#%@"
 BG = "#0d1117"
-FG = "#cbb6ff"  # light purple / gray-lilac
+FG = "#cbb6ff"
 CURSOR = "#b48cff"
+
+# Original pixels brighter than this become empty space (white studio bg)
+BG_THRESHOLD = 235
+# Crush near-threshold noise into empty
+INK_FLOOR = 12
 
 
 def brightness_to_char(v: int) -> str:
-    idx = int((v / 255) * (len(RAMP) - 1))
+    """Invert for dark terminals: white bg → space, dark subject → dense glyph."""
+    if v >= BG_THRESHOLD:
+        return " "
+    # Invert so dark hair/jacket become heavy ink
+    ink = 255 - v
+    if ink < INK_FLOOR:
+        return " "
+    # Stretch remaining range for stronger subject contrast
+    ink = min(255, int((ink - INK_FLOOR) * 255 / (255 - INK_FLOOR)))
+    # Mild gamma so midtones (face) stay readable
+    ink = int((ink / 255) ** 0.85 * 255)
+    idx = int((ink / 255) * (len(RAMP) - 1))
     return RAMP[idx]
 
 
-def image_to_ascii(img: Image.Image, cols: int = 100) -> tuple[list[str], int, int]:
-    gray = img.convert("L")
+def prepare_image(img: Image.Image) -> Image.Image:
+    """Grayscale, contrast boost, light blur to stabilize ASCII cells."""
+    gray = ImageOps.grayscale(img)
+    gray = ImageOps.autocontrast(gray, cutoff=2)
+    # Soften single-pixel noise that becomes random glyphs
+    gray = gray.filter(ImageFilter.MedianFilter(size=3))
+    return gray
+
+
+def crop_to_content(gray: Image.Image, pad: float = 0.04) -> Image.Image:
+    """Crop away large white margins so the subject fills the frame."""
+    bw = gray.point(lambda p: 0 if p >= BG_THRESHOLD else 255)
+    bbox = bw.getbbox()
+    if not bbox:
+        return gray
+    w, h = gray.size
+    l, t, r, b = bbox
+    dx = int((r - l) * pad)
+    dy = int((b - t) * pad)
+    l = max(0, l - dx)
+    t = max(0, t - dy)
+    r = min(w, r + dx)
+    b = min(h, b + dy)
+    return gray.crop((l, t, r, b))
+
+
+def image_to_ascii(img: Image.Image, cols: int = 90) -> tuple[list[str], int, int]:
+    gray = prepare_image(img)
+    gray = crop_to_content(gray)
     w, h = gray.size
     if w == 0 or h == 0:
         raise ValueError("Image has zero dimensions")
 
-    # Terminal glyphs are taller than wide
-    char_aspect = 0.50
-    rows = max(10, int((h / w) * cols * char_aspect))
-    resized = gray.resize((cols, rows))
+    # Glyphs are taller than wide
+    char_aspect = 0.45
+    rows = max(12, int((h / w) * cols * char_aspect))
+    resized = gray.resize((cols, rows), Image.Resampling.LANCZOS)
     px = resized.load()
 
     lines: list[str] = []
     for y in range(rows):
         line = "".join(brightness_to_char(px[x, y]) for x in range(cols))
         lines.append(line.rstrip())
-    return lines, cols, rows
+
+    # Drop fully empty leading/trailing rows
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    return lines, cols, len(lines)
 
 
 def make_svg(lines: list[str], cols: int, rows: int, output: str) -> None:
     static = os.getenv("STATIC", "0") == "1"
-    font_size = 10
-    line_h = 11.5
-    pad = 14
-    width = int(pad * 2 + cols * 6.2)
+    font_size = 9
+    line_h = 10.5
+    pad = 16
+    width = int(pad * 2 + cols * 5.6)
     height = int(pad * 2 + rows * line_h)
 
     defs: list[str] = []
@@ -67,26 +120,25 @@ def make_svg(lines: list[str], cols: int, rows: int, output: str) -> None:
             groups.append(f'<text x="{pad}" y="{y}" fill="{FG}">{line}</text>')
             continue
 
-        # Left-to-right reveal via expanding clip + optional cursor block
         clip_id = f"clip{i}"
-        delay = i * 0.035
+        delay = i * 0.028
         defs.append(
             f'<clipPath id="{clip_id}">'
             f'<rect x="{pad}" y="{y - line_h + 2}" width="0" height="{line_h + 1}">'
             f'<animate attributeName="width" from="0" to="{width - pad * 2}" '
-            f'begin="{delay:.3f}s" dur="0.55s" fill="freeze"/>'
+            f'begin="{delay:.3f}s" dur="0.45s" fill="freeze"/>'
             f"</rect></clipPath>"
         )
         groups.append(
             f'<text x="{pad}" y="{y}" fill="{FG}" clip-path="url(#{clip_id})">{line}</text>'
         )
         groups.append(
-            f'<rect x="{pad}" y="{y - line_h + 2}" width="6" height="{line_h}" '
+            f'<rect x="{pad}" y="{y - line_h + 2}" width="5" height="{line_h - 1}" '
             f'fill="{CURSOR}" opacity="0.85">'
-            f'<animate attributeName="x" from="{pad}" to="{width - pad - 6}" '
-            f'begin="{delay:.3f}s" dur="0.55s" fill="freeze"/>'
+            f'<animate attributeName="x" from="{pad}" to="{width - pad - 5}" '
+            f'begin="{delay:.3f}s" dur="0.45s" fill="freeze"/>'
             f'<animate attributeName="opacity" from="0.85" to="0" '
-            f'begin="{delay + 0.52:.3f}s" dur="0.08s" fill="freeze"/>'
+            f'begin="{delay + 0.42:.3f}s" dur="0.08s" fill="freeze"/>'
             f"</rect>"
         )
 
@@ -95,20 +147,20 @@ def make_svg(lines: list[str], cols: int, rows: int, output: str) -> None:
   <defs>
     {"".join(defs)}
   </defs>
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="{font_size}">
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="{font_size}" letter-spacing="0.5">
     {"".join(groups)}
   </g>
 </svg>
 """
     Path(output).write_text(svg, encoding="utf-8")
-    print(f"[make_ascii_svg] wrote {output}")
+    print(f"[make_ascii_svg] wrote {output} ({cols}x{rows})")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate animated ASCII SVG portrait")
     parser.add_argument("--input", default="source-prepped.png")
     parser.add_argument("--output", default="avi-ascii.svg")
-    parser.add_argument("--cols", type=int, default=100)
+    parser.add_argument("--cols", type=int, default=90)
     args = parser.parse_args()
 
     in_path = Path(args.input)
