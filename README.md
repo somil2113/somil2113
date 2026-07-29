@@ -4,7 +4,7 @@
 somil2113@github ~ $ cat contrib-heatmap.svg
 ```
 
-<img src="./contrib-heatmap.svg" width="860" />
+<img src="./contrib-heatmap.svg?v=3" width="860" />
 
 <br/><br/>
 
@@ -15,7 +15,7 @@ somil2113@github ~ $ neofetch && cat avi-ascii.svg
 <table>
   <tr>
     <td valign="top">
-      <img src="./avi-ascii.svg" width="370" />
+      <img src="./avi-ascii.svg?v=3" width="370" />
     </td>
     <td valign="top">
       <img src="./info-card.svg" width="490" />
