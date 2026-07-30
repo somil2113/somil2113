@@ -72,48 +72,66 @@ def encode_png(img: Image.Image) -> str:
 
 def silhouette_path(gray: Image.Image, ox: float, oy: float, scale_x: float, scale_y: float) -> tuple[str, float]:
     """
-    Build an SVG path for the outer silhouette of the drawing.
-    Returns (path_d, approximate_perimeter).
+    Build an SVG path for the outer silhouette of the drawn figure.
+    Connects nearby ink strokes into one person-shaped blob, then traces
+    its external contour (not the rectangular image frame).
     """
     arr = np.array(gray, dtype=np.uint8)
-    # Ink mask (black lines + filled interior via flood from outside)
-    ink = (arr < 220).astype(np.uint8) * 255
+    h, w = arr.shape
+    ink = (arr < 200).astype(np.uint8) * 255
 
-    # Close gaps in the outline so we get one solid subject blob
-    kernel = np.ones((5, 5), np.uint8)
-    closed = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, kernel, iterations=3)
-    closed = cv2.dilate(closed, np.ones((3, 3), np.uint8), iterations=1)
+    # Merge nearby strokes into one figure-shaped component (not full canvas)
+    conn = cv2.dilate(
+        ink,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+        iterations=2,
+    )
 
-    # Fill interior: flood-fill background from corners, invert
-    h, w = closed.shape
-    flood = closed.copy()
-    ff_mask = np.zeros((h + 2, w + 2), np.uint8)
-    cv2.floodFill(flood, ff_mask, (0, 0), 255)
-    filled = cv2.bitwise_not(flood)
-    subject = cv2.bitwise_or(closed, filled)
+    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(conn)
+    best_i = 0
+    best_area = 0
+    for i in range(1, n_labels):
+        x, y, bw, bh, area = stats[i]
+        # Reject components that are basically the whole frame
+        if area > 0.85 * w * h:
+            continue
+        if bw > 0.95 * w and bh > 0.95 * h:
+            continue
+        if area > best_area:
+            best_area = int(area)
+            best_i = i
 
-    contours, _ = cv2.findContours(subject, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if best_i == 0:
+        return "", 0.0
+
+    mask = (labels == best_i).astype(np.uint8) * 255
+    # Smooth silhouette edge slightly
+    mask = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=2,
+    )
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if not contours:
         return "", 0.0
 
     contour = max(contours, key=cv2.contourArea)
     peri = float(cv2.arcLength(contour.astype(np.float32), True))
-    # Smooth enough to look organic, not jagged
-    approx = cv2.approxPolyDP(contour, max(1.5, 0.0018 * peri), True)
-    pts = approx.reshape(-1, 2).astype(np.float64)
-    if len(pts) < 3:
-        pts = contour.reshape(-1, 2).astype(np.float64)
+    pts = contour.reshape(-1, 2).astype(np.float64)
 
-    # Chaikin-ish densify then downsample for smoother SVG curves via many short segments
-    # Convert to cubic Bezier via Catmull-Rom
-    # Start at top-most point so animation begins at the hairline
+    # Reject accidental near-rectangular frame contours
+    bx, by, bw, bh = cv2.boundingRect(contour)
+    if bw > 0.95 * w and bh > 0.95 * h and cv2.contourArea(contour) > 0.8 * w * h:
+        return "", 0.0
+
+    # Start at top-most point (hairline)
     i0 = int(np.argmin(pts[:, 1]))
-    pts = np.vstack([pts[i0:], pts[:i0], pts[i0:i0 + 1]])  # closed loop starting at top
+    pts = np.vstack([pts[i0:], pts[:i0]])
 
-    # Resample for even spacing
-    pts = _resample_closed(pts[:-1], spacing=4.0)
+    pts = _resample_closed(pts, spacing=3.5)
     path_d = _catmull_closed_to_path(pts, ox, oy, scale_x, scale_y)
-    # Perimeter in SVG units
     svg_peri = peri * ((scale_x + scale_y) / 2.0)
     return path_d, svg_peri
 
@@ -208,9 +226,9 @@ def main() -> None:
             'dur="0.5s" fill="freeze"/>'
         )
         # Stream of dashes + bright comet traveling the silhouette
-        dash_a, gap_a = 10, 8
+        dash_a, gap_a = 12, 7
         period_a = dash_a + gap_a
-        comet_len = min(36.0, sil_peri * 0.08)
+        comet_len = min(48.0, sil_peri * 0.10)
         gap_b = max(1.0, sil_peri - comet_len)
 
         style_block = f"""
@@ -218,21 +236,21 @@ def main() -> None:
     .sil-stream {{
       fill: none;
       stroke: {FLOW};
-      stroke-width: 1.7;
+      stroke-width: 2.2;
       stroke-linecap: round;
       stroke-linejoin: round;
       stroke-dasharray: {dash_a} {gap_a};
-      animation: silFlowA 2.8s linear infinite;
+      animation: silFlowA 2.4s linear infinite;
     }}
     .sil-comet {{
       fill: none;
       stroke: {FLOW_BRIGHT};
-      stroke-width: 2.6;
+      stroke-width: 3.2;
       stroke-linecap: round;
       stroke-linejoin: round;
       stroke-dasharray: {comet_len:.1f} {gap_b:.1f};
       filter: url(#glow);
-      animation: silFlowB 4.2s linear infinite;
+      animation: silFlowB 3.8s linear infinite;
     }}
     @keyframes silFlowA {{
       to {{ stroke-dashoffset: -{period_a}; }}
