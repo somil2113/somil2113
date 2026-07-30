@@ -20,7 +20,7 @@ ROLE = "Software Developer"
 NOW = "Building cool things with Python + Web"
 PREV = "Learning systems, backend, automation"
 STACK = "Python · JS/TS · GitHub Actions · Docker"
-HIGHLIGHTS = "ASCII line-art portrait · automation · clean UI"
+HIGHLIGHTS = "Line-art portrait · automation · clean UI"
 # ----------------------------------
 
 BG = "#0d1117"
