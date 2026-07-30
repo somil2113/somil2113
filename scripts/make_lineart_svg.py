@@ -72,30 +72,23 @@ def encode_png(img: Image.Image) -> str:
 
 def silhouette_path(gray: Image.Image, ox: float, oy: float, scale_x: float, scale_y: float) -> tuple[str, float]:
     """
-    Build an SVG path from the true outer ink envelope of the drawing.
-
-    Left side = leftmost ink each row (outer jacket/sleeve).
-    Bottom = bottommost ink each column (jacket hem).
-    Right/top = rightmost / topmost ink (face + hair).
-    This avoids cutting through inner jacket folds.
+    Hybrid outline for the flowing border:
+      - top + right follow the drawn silhouette (hair / face)
+      - left + bottom follow the rectangular image frame
     """
     arr = np.array(gray, dtype=np.uint8)
     h, w = arr.shape
-    # Slight dilate so tiny gaps in the outer stroke don't punch holes in the envelope
     ink = (arr < 200).astype(np.uint8) * 255
     ink = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
 
-    pts = _ink_outer_envelope(ink, step=2)
+    pts = _hybrid_silhouette(ink)
     if len(pts) < 8:
         return "", 0.0
 
-    # Start at top-most point
     i0 = int(np.argmin(pts[:, 1]))
     pts = np.vstack([pts[i0:], pts[:i0]])
     pts = _resample_closed(pts, spacing=3.0)
-    # Light smooth without pulling away from outer rim
-    pts = _chaikin_open_loop(pts, iterations=1)
-    pts = _resample_closed(pts, spacing=3.2)
+    # No Chaikin — keeps the left/bottom rectangle edges sharp
 
     peri = float(
         np.linalg.norm(np.diff(np.vstack([pts, pts[:1]]), axis=0), axis=1).sum()
@@ -105,8 +98,11 @@ def silhouette_path(gray: Image.Image, ox: float, oy: float, scale_x: float, sca
     return path_d, svg_peri
 
 
-def _ink_outer_envelope(ink: np.ndarray, step: int = 2) -> np.ndarray:
-    """Closed polygon from leftmost/rightmost/topmost/bottommost ink extremes."""
+def _hybrid_silhouette(ink: np.ndarray, step: int = 2) -> np.ndarray:
+    """
+    Top/right = outer ink envelope of the figure.
+    Left/bottom = exact rectangular border of the image.
+    """
     h, w = ink.shape
     ys, xs = np.where(ink > 0)
     if len(xs) == 0:
@@ -115,53 +111,51 @@ def _ink_outer_envelope(ink: np.ndarray, step: int = 2) -> np.ndarray:
     ymin, ymax = int(ys.min()), int(ys.max())
     xmin, xmax = int(xs.min()), int(xs.max())
 
-    left: dict[int, int] = {}
+    top: dict[int, int] = {}
     right: dict[int, int] = {}
     for y in range(ymin, ymax + 1):
         cols = np.where(ink[y] > 0)[0]
         if len(cols):
-            left[y] = int(cols.min())
             right[y] = int(cols.max())
-
-    top: dict[int, int] = {}
-    bottom: dict[int, int] = {}
     for x in range(xmin, xmax + 1):
         rows = np.where(ink[:, x] > 0)[0]
         if len(rows):
             top[x] = int(rows.min())
-            bottom[x] = int(rows.max())
 
     pts: list[tuple[float, float]] = []
 
-    # 1) Down the outer left rim (jacket / sleeve)
-    for y in range(ymin, ymax + 1, step):
-        if y in left:
-            pts.append((left[y], y))
-    if ymax in left and (not pts or pts[-1][1] != ymax):
-        pts.append((left[ymax], ymax))
-
-    # 2) Across the bottom hem (left → right), always on bottommost ink
-    x_bl = int(pts[-1][0]) if pts else xmin
-    for x in range(x_bl, xmax + 1, step):
-        if x in bottom:
-            pts.append((x, bottom[x]))
-    if xmax in bottom:
-        pts.append((xmax, bottom[xmax]))
-
-    # 3) Up the right profile (face / beard)
-    for y in range(ymax, ymin - 1, -step):
-        if y in right:
-            pts.append((right[y], y))
-    if ymin in right:
-        pts.append((right[ymin], ymin))
-
-    # 4) Across the top hairline (right → left)
-    x_tr = int(pts[-1][0]) if pts else xmax
-    for x in range(x_tr, xmin - 1, -step):
+    # 1) Top hairline (left → right), ink envelope
+    for x in range(xmin, xmax + 1, step):
         if x in top:
-            pts.append((x, top[x]))
-    if xmin in top:
-        pts.append((xmin, top[xmin]))
+            pts.append((float(x), float(top[x])))
+    if xmax in top and (not pts or pts[-1][0] != xmax):
+        pts.append((float(xmax), float(top[xmax])))
+
+    # 2) Right profile / jacket front (top → bottom), ink envelope
+    y_start = int(pts[-1][1]) if pts else ymin
+    for y in range(max(y_start, ymin), ymax + 1, step):
+        if y in right:
+            pts.append((float(right[y]), float(y)))
+    if ymax in right:
+        pts.append((float(right[ymax]), float(ymax)))
+
+    # 3) Drop to bottom-right corner of the image rectangle
+    pts.append((float(w - 1), float(h - 1)))
+
+    # 4) Bottom edge of rectangle (right → left)
+    for x in range(w - 1, -1, -step):
+        pts.append((float(x), float(h - 1)))
+    pts.append((0.0, float(h - 1)))
+
+    # 5) Left edge of rectangle (bottom → top)
+    for y in range(h - 1, -1, -step):
+        pts.append((0.0, float(y)))
+    pts.append((0.0, 0.0))
+
+    # 6) Close along top edge of rectangle back toward hair start if needed
+    if pts and pts[0][0] > 0:
+        for x in range(0, int(pts[0][0]) + 1, step):
+            pts.append((float(x), 0.0))
 
     return np.asarray(pts, dtype=np.float64)
 
