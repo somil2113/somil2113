@@ -73,14 +73,16 @@ def encode_png(img: Image.Image) -> str:
 def silhouette_path(gray: Image.Image, ox: float, oy: float, scale_x: float, scale_y: float) -> tuple[str, float]:
     """
     Build an SVG path for the outer silhouette of the drawn figure.
-    Connects nearby ink strokes into one person-shaped blob, then traces
-    its external contour (not the rectangular image frame).
+
+    Dilates ink, keeps all meaningful stroke components (so outer jacket
+    edges aren't dropped), then traces the external contour. The bottom-left
+    path is further pushed out to the true leftmost ink so it doesn't cut
+    inside the jacket folds.
     """
     arr = np.array(gray, dtype=np.uint8)
     h, w = arr.shape
     ink = (arr < 200).astype(np.uint8) * 255
 
-    # Merge nearby strokes into one figure-shaped component (not full canvas)
     conn = cv2.dilate(
         ink,
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
@@ -88,30 +90,30 @@ def silhouette_path(gray: Image.Image, ox: float, oy: float, scale_x: float, sca
     )
 
     n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(conn)
-    best_i = 0
-    best_area = 0
+    mask = np.zeros((h, w), dtype=np.uint8)
+    min_area = max(40, int(0.0004 * w * h))
     for i in range(1, n_labels):
         x, y, bw, bh, area = stats[i]
-        # Reject components that are basically the whole frame
-        if area > 0.85 * w * h:
+        if area < min_area:
             continue
-        if bw > 0.95 * w and bh > 0.95 * h:
+        # Reject only a full-frame flood component
+        if area > 0.90 * w * h and bw > 0.95 * w and bh > 0.95 * h:
             continue
-        if area > best_area:
-            best_area = int(area)
-            best_i = i
+        mask[labels == i] = 255
 
-    if best_i == 0:
+    if not mask.any():
         return "", 0.0
 
-    mask = (labels == best_i).astype(np.uint8) * 255
-    # Smooth silhouette edge slightly
     mask = cv2.morphologyEx(
         mask,
         cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
         iterations=2,
     )
+
+    # Pull silhouette out to the real outer ink on the left/bottom so the
+    # path hugs the jacket rim instead of an internal fold.
+    mask = _expand_to_outer_ink(mask, ink)
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if not contours:
@@ -121,19 +123,80 @@ def silhouette_path(gray: Image.Image, ox: float, oy: float, scale_x: float, sca
     peri = float(cv2.arcLength(contour.astype(np.float32), True))
     pts = contour.reshape(-1, 2).astype(np.float64)
 
-    # Reject accidental near-rectangular frame contours
     bx, by, bw, bh = cv2.boundingRect(contour)
     if bw > 0.95 * w and bh > 0.95 * h and cv2.contourArea(contour) > 0.8 * w * h:
         return "", 0.0
 
-    # Start at top-most point (hairline)
     i0 = int(np.argmin(pts[:, 1]))
     pts = np.vstack([pts[i0:], pts[:i0]])
-
     pts = _resample_closed(pts, spacing=3.5)
+    # Snap bottom-left samples to leftmost ink again after smoothing
+    pts = _snap_bottom_left_to_ink(pts, ink)
+
     path_d = _catmull_closed_to_path(pts, ox, oy, scale_x, scale_y)
     svg_peri = peri * ((scale_x + scale_y) / 2.0)
     return path_d, svg_peri
+
+
+def _expand_to_outer_ink(mask: np.ndarray, ink: np.ndarray) -> np.ndarray:
+    """Ensure leftmost/bottom ink strokes are inside the silhouette mask."""
+    h, w = mask.shape
+    out = mask.copy()
+    # For each row, if ink exists left of the mask, fill out to that ink
+    for y in range(h):
+        ink_xs = np.where(ink[y] > 0)[0]
+        mask_xs = np.where(out[y] > 0)[0]
+        if len(ink_xs) == 0:
+            continue
+        left_ink = int(ink_xs.min())
+        if len(mask_xs) == 0:
+            continue
+        left_mask = int(mask_xs.min())
+        if left_ink < left_mask:
+            # Bridge from outer ink into the figure (short horizontal fill)
+            right = min(left_mask + 2, w - 1)
+            out[y, left_ink : right + 1] = 255
+
+    # Similar for bottom rows: extend mask down to lowest ink in each column
+    # on the left half (jacket hem / sleeve bottom)
+    for x in range(0, int(w * 0.55)):
+        ink_ys = np.where(ink[:, x] > 0)[0]
+        mask_ys = np.where(out[:, x] > 0)[0]
+        if len(ink_ys) == 0 or len(mask_ys) == 0:
+            continue
+        bottom_ink = int(ink_ys.max())
+        bottom_mask = int(mask_ys.max())
+        if bottom_ink > bottom_mask:
+            out[bottom_mask : bottom_ink + 1, x] = 255
+
+    out = cv2.morphologyEx(
+        out,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=2,
+    )
+    return out
+
+
+def _snap_bottom_left_to_ink(pts: np.ndarray, ink: np.ndarray) -> np.ndarray:
+    """Push path points in the bottom-left region out to the outermost ink."""
+    h, w = ink.shape
+    pts = pts.copy()
+    for i, (x, y) in enumerate(pts):
+        yi = int(round(y))
+        if yi < int(h * 0.62) or yi >= h:
+            continue
+        if x > w * 0.45:
+            continue
+        row = ink[yi]
+        xs = np.where(row > 0)[0]
+        if len(xs) == 0:
+            continue
+        left = float(xs.min())
+        # Only snap outward (never pull inward)
+        if left < x - 1:
+            pts[i, 0] = left
+    return pts
 
 
 def _resample_closed(pts: np.ndarray, spacing: float) -> np.ndarray:
