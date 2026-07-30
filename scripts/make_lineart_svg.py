@@ -154,52 +154,51 @@ def extract_strokes(bgr: np.ndarray) -> tuple[list[tuple[np.ndarray, str]], int,
     outer = largest_external_contour(mask)
     if outer is not None:
         for loop in split_closed_to_open(outer):
-            smooth = chaikin(resample_open(loop, spacing=3.0), iterations=3)
+            smooth = chaikin(resample_open(loop, spacing=4.0), iterations=3)
             strokes.append((smooth, "main"))
 
     # --- Internal feature edges (masked, no border double-draw) ---
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     g2 = clahe.apply(gray)
-    edges = cv2.Canny(g2, 55, 140)
+    edges = cv2.Canny(g2, 45, 130)
 
     # Keep edges only well inside the subject (avoid duplicating silhouette)
-    inner = cv2.erode(mask, np.ones((11, 11), np.uint8), iterations=1)
+    inner = cv2.erode(mask, np.ones((7, 7), np.uint8), iterations=1)
     edges = cv2.bitwise_and(edges, edges, mask=inner)
 
-    # Connect small gaps, then thin-ish with erode after dilate
-    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8), iterations=1)
+    # Connect small gaps
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
 
     # Optional thinning for single-pixel ridges
     try:
         edges = cv2.ximgproc.thinning(edges)
     except Exception:
-        # Fallback: light erode to reduce double ridges
-        edges = cv2.erode(edges, np.ones((2, 2), np.uint8), iterations=1)
+        pass
 
     contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
-    min_len = w * 0.055
+    min_len = w * 0.035
     internal: list[np.ndarray] = []
     for c in contours:
-        peri = cv2.arcLength(c, False)
+        peri = float(cv2.arcLength(c.astype(np.float32), False))
         if peri < min_len:
             continue
         pts = c.reshape(-1, 2).astype(np.float64)
-        # Drop nearly-horizontal scribble bands (jacket texture noise)
+        # Drop short nearly-horizontal scribble bands (jacket texture noise)
         if len(pts) >= 4:
-            dx = np.abs(np.diff(pts[:, 0])).mean()
-            dy = np.abs(np.diff(pts[:, 1])).mean()
-            if dx > 1e-3 and dy / dx < 0.22 and peri < w * 0.35:
+            dx = float(np.abs(np.diff(pts[:, 0])).mean())
+            dy = float(np.abs(np.diff(pts[:, 1])).mean())
+            if dx > 1e-3 and dy / dx < 0.18 and peri < w * 0.25:
                 continue
         internal.append(pts)
 
     # Keep longest internal strokes only (face/hair structure)
-    def peri(p: np.ndarray) -> float:
+    def peri_key(p: np.ndarray) -> float:
         return float(cv2.arcLength(p.reshape(-1, 1, 2).astype(np.float32), False))
 
-    internal.sort(key=peri, reverse=True)
-    for pts in internal[:80]:
-        smooth = chaikin(resample_open(pts, spacing=2.2), iterations=2)
-        if len(smooth) >= 2:
+    internal.sort(key=peri_key, reverse=True)
+    for pts in internal[:120]:
+        smooth = chaikin(resample_open(pts, spacing=3.0), iterations=2)
+        if len(smooth) >= 3:
             strokes.append((smooth, "detail"))
 
     return strokes, w, h
