@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate neofetch-style info card SVG (purple terminal theme).
+Generate neofetch-style info card SVG (red terminal theme).
 
 Usage:
   python scripts/make_info_card.py
@@ -24,11 +24,11 @@ HIGHLIGHTS = "ASCII SVG profile · automation · clean UI"
 # ----------------------------------
 
 BG = "#0d1117"
-PANEL = "#161022"
-BORDER = "#3d2a61"
-KEY = "#b48cff"
-VAL = "#e6ddff"
-MUTED = "#9f8bc8"
+PANEL = "#1a1014"
+BORDER = "#6b2222"
+KEY = "#ff6b6b"
+VAL = "#ffd6d6"
+MUTED = "#c48a8a"
 
 
 def text_line(content: str, y: float, fill: str, delay: float, static: bool) -> str:

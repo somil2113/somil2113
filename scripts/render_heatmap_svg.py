@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Render 53×7 contribution heatmap SVG from data/contributions.json (purple palette).
+Render 53×7 contribution heatmap SVG from data/contributions.json (red palette).
 
 GitHub-like layout: month labels, Mon/Wed/Fri day labels, Less→More legend.
 
@@ -15,19 +15,19 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-# Purple scale matching GitHub intensity steps (0..4 + boosted top)
+# Red scale matching GitHub intensity steps (0..4 + boosted top)
 PALETTE = [
     "#161b22",  # level 0 empty
-    "#2a1b3f",
-    "#4b2b75",
-    "#7c3aed",
-    "#a78bfa",
-    "#c4b5fd",  # level 5 (rare / boosted)
+    "#3d1515",
+    "#6b1e1e",
+    "#a82a2a",
+    "#e63946",
+    "#ff8a80",  # level 5 (rare / boosted)
 ]
 
 BG = "#0d1117"
-TEXT = "#e6ddff"
-MUTED = "#9f8bc8"
+TEXT = "#ffd6d6"
+MUTED = "#c48a8a"
 
 CELL = 11
 GAP = 3
@@ -119,7 +119,7 @@ def main() -> None:
         x = LEFT + col * (CELL + GAP)
         y = TOP + row * (CELL + GAP)
         level = max(0, min(5, int(day.get("level", 0))))
-        # GraphQL levels are 0..4 — stretch top quartile into brighter purple
+        # GraphQL levels are 0..4 — stretch top quartile into brighter red
         if level == 4:
             level = 5
         fill = PALETTE[level]

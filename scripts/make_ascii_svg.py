@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate animated ASCII SVG portrait (monochrome purple terminal theme).
+Generate animated ASCII SVG portrait (monochrome red terminal theme).
 
 Uses edge-connected flood-fill so only the true studio backdrop becomes
 empty space — light face/skin stays as dense glyphs on the dark terminal.
@@ -25,8 +25,8 @@ from PIL import Image, ImageFilter, ImageOps
 
 RAMP = " .:-=+*#%@"
 BG = "#0d1117"
-FG = "#d4c4ff"
-CURSOR = "#b48cff"
+FG = "#ffb4b4"
+CURSOR = "#ff5c5c"
 
 # Pixels this bright *and* connected to the image border count as backdrop
 BG_LOOSE = 236
