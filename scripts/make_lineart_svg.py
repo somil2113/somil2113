@@ -71,6 +71,8 @@ def downsample(pts: np.ndarray, max_points: int = 80) -> np.ndarray:
     idx = np.linspace(0, len(pts) - 1, max_points).astype(int)
     return pts[idx]
 
+
+def chaikin(pts: np.ndarray, iterations: int = 2) -> np.ndarray:
     """Chaikin corner-cutting for smoother open polylines."""
     pts = pts.astype(np.float64).reshape(-1, 2)
     for _ in range(iterations):
