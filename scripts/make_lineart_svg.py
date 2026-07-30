@@ -193,7 +193,10 @@ def extract_strokes(bgr: np.ndarray) -> tuple[list[tuple[np.ndarray, str]], int,
         internal.append(pts)
 
     # Keep longest internal strokes only (face/hair structure)
-    internal.sort(key=lambda p: cv2.arcLength(p.reshape(-1, 1, 2), False), reverse=True)
+    def peri(p: np.ndarray) -> float:
+        return float(cv2.arcLength(p.reshape(-1, 1, 2).astype(np.float32), False))
+
+    internal.sort(key=peri, reverse=True)
     for pts in internal[:80]:
         smooth = chaikin(resample_open(pts, spacing=2.2), iterations=2)
         if len(smooth) >= 2:
@@ -243,7 +246,10 @@ def main() -> None:
         else:
             stroke, width = STROKE_SOFT, 1.05
         delay = 0.05 + i * 0.012
-        length = max(50, int(cv2.arcLength(pts.reshape(-1, 1, 2), False) * scale))
+        length = max(
+            50,
+            int(cv2.arcLength(pts.reshape(-1, 1, 2).astype(np.float32), False) * scale),
+        )
 
         if static:
             paths.append(
