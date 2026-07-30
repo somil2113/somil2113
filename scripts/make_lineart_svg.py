@@ -53,27 +53,28 @@ def extract_contours(bgr: np.ndarray) -> tuple[list[np.ndarray], int, int]:
     # Slight bilateral keep edges while smoothing skin noise
     gray = cv2.bilateralFilter(gray, 7, 50, 50)
 
-    edges = cv2.Canny(gray, 60, 150)
+    edges = cv2.Canny(gray, 40, 120)
     # Dilate lightly so contours connect better
     edges = cv2.dilate(edges, np.ones((2, 2), np.uint8), iterations=1)
 
     contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
 
     kept: list[np.ndarray] = []
-    min_area = (w * h) * 0.00015
+    min_len = w * 0.04
     for c in contours:
-        if cv2.contourArea(c) < min_area and cv2.arcLength(c, False) < w * 0.08:
+        peri = cv2.arcLength(c, False)
+        if peri < min_len:
             continue
         # Simplify
-        eps = 0.0025 * cv2.arcLength(c, False)
-        approx = cv2.approxPolyDP(c, max(eps, 1.2), False)
+        eps = 0.0018 * peri
+        approx = cv2.approxPolyDP(c, max(eps, 0.8), False)
         if len(approx) < 2:
             continue
         kept.append(approx.reshape(-1, 2))
 
     # Prefer longer strokes first (drawn underneath soft, then strong top)
-    kept.sort(key=lambda pts: len(pts), reverse=True)
-    return kept[:450], w, h  # cap for file size
+    kept.sort(key=lambda pts: cv2.arcLength(pts.reshape(-1, 1, 2), False), reverse=True)
+    return kept[:700], w, h  # cap for file size
 
 
 def points_to_path(pts: np.ndarray, sx: float, sy: float, ox: float, oy: float) -> str:
