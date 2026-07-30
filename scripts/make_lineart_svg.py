@@ -2,11 +2,12 @@
 """
 Generate a red line-art portrait SVG with terminal chrome.
 
-Builds a clean silhouette from the subject mask, then adds smoothed
-internal Canny strokes (no jagged approxPolyDP shards).
+Expects a clean black-on-white line drawing (e.g. assets/lineart-source.png).
+Recolors ink to red, punches out the white backdrop, and embeds it in the
+same terminal frame styling used by the other portrait SVGs.
 
 Usage:
-  python scripts/make_lineart_svg.py [--input assets/source-photo.jpg] [--output portrait-lineart.svg]
+  python scripts/make_lineart_svg.py [--input assets/lineart-source.png] [--output portrait-lineart.svg]
 
 Env:
   STATIC=1 -> no animation
@@ -15,207 +16,62 @@ Env:
 from __future__ import annotations
 
 import argparse
+import base64
+import io
 import os
 import sys
 from pathlib import Path
 
-import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 BG = "#0d1117"
 PANEL = "#1a1014"
 BORDER = "#6b2222"
 MUTED = "#c48a8a"
-STROKE = "#ff6b6b"
-STROKE_SOFT = "#c44545"
+INK = (255, 107, 107)  # #ff6b6b
 
 OUT_W = 370
 CHROME_TOP = 44
 PAD = 16
-PROCESS_W = 560
+IMG_MAX_H = 420
 
 
-def load_bgr(path: Path) -> np.ndarray:
-    img = Image.open(path).convert("RGB")
-    return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+def fit_portrait(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
+    w, h = img.size
+    scale = min(max_w / w, max_h / h)
+    nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+    return img.resize((nw, nh), Image.Resampling.LANCZOS)
 
 
-def resample_open(pts: np.ndarray, spacing: float = 2.5) -> np.ndarray:
-    """Resample an open polyline to roughly uniform spacing."""
-    pts = pts.astype(np.float64).reshape(-1, 2)
-    if len(pts) < 2:
-        return pts
-    diffs = np.diff(pts, axis=0)
-    seglen = np.linalg.norm(diffs, axis=1)
-    total = float(seglen.sum())
-    if total < spacing:
-        return pts
-    n = max(2, int(round(total / spacing)))
-    cum = np.concatenate([[0.0], np.cumsum(seglen)])
-    samples = np.linspace(0.0, total, n)
-    out = []
-    j = 0
-    for s in samples:
-        while j < len(seglen) - 1 and cum[j + 1] < s:
-            j += 1
-        t = 0.0 if seglen[j] == 0 else (s - cum[j]) / seglen[j]
-        out.append(pts[j] * (1 - t) + pts[j + 1] * t)
-    return np.asarray(out, dtype=np.float64)
+def lineart_to_red_rgba(img: Image.Image) -> Image.Image:
+    """Black ink → red; white paper → transparent."""
+    gray = ImageOps.grayscale(img)
+    # Soft threshold so anti-aliased edges keep partial alpha
+    arr = np.asarray(gray, dtype=np.float32)
+    # ink strength: 0 on white, 1 on black
+    ink = 1.0 - (arr / 255.0)
+    ink = np.clip((ink - 0.04) / 0.96, 0.0, 1.0)
+    # Slight contrast so mid greys become clearer strokes
+    ink = np.power(ink, 0.85)
+
+    rgba = np.zeros((arr.shape[0], arr.shape[1], 4), dtype=np.uint8)
+    rgba[..., 0] = INK[0]
+    rgba[..., 1] = INK[1]
+    rgba[..., 2] = INK[2]
+    rgba[..., 3] = (ink * 255.0).astype(np.uint8)
+    return Image.fromarray(rgba, mode="RGBA")
 
 
-def downsample(pts: np.ndarray, max_points: int = 80) -> np.ndarray:
-    pts = pts.reshape(-1, 2)
-    if len(pts) <= max_points:
-        return pts
-    idx = np.linspace(0, len(pts) - 1, max_points).astype(int)
-    return pts[idx]
-
-
-def chaikin(pts: np.ndarray, iterations: int = 2) -> np.ndarray:
-    """Chaikin corner-cutting for smoother open polylines."""
-    pts = pts.astype(np.float64).reshape(-1, 2)
-    for _ in range(iterations):
-        if len(pts) < 3:
-            break
-        new = [pts[0]]
-        for i in range(len(pts) - 1):
-            p, q = pts[i], pts[i + 1]
-            new.append(0.75 * p + 0.25 * q)
-            new.append(0.25 * p + 0.75 * q)
-        new.append(pts[-1])
-        pts = np.asarray(new, dtype=np.float64)
-    return pts
-
-
-def catmull_rom_to_bezier_path(
-    pts: np.ndarray, sx: float, sy: float, ox: float, oy: float
-) -> str:
-    """Convert open polyline to smooth cubic SVG path via Catmull-Rom."""
-    pts = pts.reshape(-1, 2)
-    if len(pts) == 0:
-        return ""
-    if len(pts) == 1:
-        x, y = pts[0]
-        return f"M {ox + x * sx:.2f} {oy + y * sy:.2f}"
-    if len(pts) == 2:
-        (x0, y0), (x1, y1) = pts
-        return (
-            f"M {ox + x0 * sx:.2f} {oy + y0 * sy:.2f} "
-            f"L {ox + x1 * sx:.2f} {oy + y1 * sy:.2f}"
-        )
-
-    # Pad endpoints for Catmull-Rom
-    ext = np.vstack([pts[0], pts, pts[-1]])
-    x0, y0 = pts[0]
-    parts = [f"M {ox + x0 * sx:.2f} {oy + y0 * sy:.2f}"]
-    for i in range(1, len(ext) - 2):
-        p0, p1, p2, p3 = ext[i - 1], ext[i], ext[i + 1], ext[i + 2]
-        c1 = p1 + (p2 - p0) / 6.0
-        c2 = p2 - (p3 - p1) / 6.0
-        parts.append(
-            f"C {ox + c1[0] * sx:.2f} {oy + c1[1] * sy:.2f} "
-            f"{ox + c2[0] * sx:.2f} {oy + c2[1] * sy:.2f} "
-            f"{ox + p2[0] * sx:.2f} {oy + p2[1] * sy:.2f}"
-        )
-    return " ".join(parts)
-
-
-def largest_external_contour(mask: np.ndarray) -> np.ndarray | None:
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    if not contours:
-        return None
-    c = max(contours, key=cv2.contourArea)
-    if cv2.contourArea(c) < 500:
-        return None
-    return c.reshape(-1, 2)
-
-
-def split_closed_to_open(pts: np.ndarray, pieces: int = 1) -> list[np.ndarray]:
-    """Keep silhouette as one open-ish loop starting at topmost point."""
-    pts = pts.reshape(-1, 2)
-    if len(pts) < 8:
-        return [pts]
-    # Start at top-most point for a natural hairline begin
-    i0 = int(np.argmin(pts[:, 1]))
-    ordered = np.vstack([pts[i0:], pts[: i0 + 1]])  # close back to start
-    return [ordered]
-
-
-def extract_strokes(bgr: np.ndarray) -> tuple[list[tuple[np.ndarray, str]], int, int]:
-    h0, w0 = bgr.shape[:2]
-    w = PROCESS_W
-    h = max(1, int(round(h0 * (w / max(w0, 1)))))
-    resized = cv2.resize(bgr, (w, h), interpolation=cv2.INTER_AREA)
-
-    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-    gray = cv2.bilateralFilter(gray, 9, 60, 60)
-
-    # Subject mask from near-white studio backdrop
-    _, mask = cv2.threshold(gray, 242, 255, cv2.THRESH_BINARY_INV)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8), iterations=2)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8), iterations=1)
-
-    strokes: list[tuple[np.ndarray, str]] = []
-
-    # --- Primary silhouette (clean outer contour) ---
-    outer = largest_external_contour(mask)
-    if outer is not None:
-        for loop in split_closed_to_open(outer):
-            smooth = downsample(
-                chaikin(resample_open(loop, spacing=5.0), iterations=2),
-                max_points=120,
-            )
-            strokes.append((smooth, "main"))
-
-    # --- Internal feature edges (masked, no border double-draw) ---
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    g2 = clahe.apply(gray)
-    edges = cv2.Canny(g2, 50, 135)
-
-    # Keep edges only well inside the subject (avoid duplicating silhouette)
-    inner = cv2.erode(mask, np.ones((9, 9), np.uint8), iterations=1)
-    edges = cv2.bitwise_and(edges, edges, mask=inner)
-    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8), iterations=1)
-
-    try:
-        edges = cv2.ximgproc.thinning(edges)
-    except Exception:
-        pass
-
-    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
-    min_len = w * 0.04
-    internal: list[np.ndarray] = []
-    for c in contours:
-        peri = float(cv2.arcLength(c.astype(np.float32), False))
-        if peri < min_len:
-            continue
-        pts = c.reshape(-1, 2).astype(np.float64)
-        if len(pts) >= 4:
-            dx = float(np.abs(np.diff(pts[:, 0])).mean())
-            dy = float(np.abs(np.diff(pts[:, 1])).mean())
-            if dx > 1e-3 and dy / dx < 0.18 and peri < w * 0.25:
-                continue
-        internal.append(pts)
-
-    def peri_key(p: np.ndarray) -> float:
-        return float(cv2.arcLength(p.reshape(-1, 1, 2).astype(np.float32), False))
-
-    internal.sort(key=peri_key, reverse=True)
-    for pts in internal[:55]:
-        smooth = downsample(
-            chaikin(resample_open(pts, spacing=4.0), iterations=2),
-            max_points=48,
-        )
-        if len(smooth) >= 3:
-            strokes.append((smooth, "detail"))
-
-    return strokes, w, h
+def encode_png(img: Image.Image) -> str:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate red line-art portrait SVG")
-    parser.add_argument("--input", default="assets/source-photo.jpg")
+    parser.add_argument("--input", default="assets/lineart-source.png")
     parser.add_argument("--output", default="portrait-lineart.svg")
     args = parser.parse_args()
 
@@ -227,54 +83,31 @@ def main() -> None:
     static = os.getenv("STATIC", "0") == "1"
 
     try:
-        bgr = load_bgr(in_path)
+        raw = Image.open(in_path).convert("RGB")
     except Exception as exc:
         print(f"[make_lineart_svg] failed to open image: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    strokes, src_w, src_h = extract_strokes(bgr)
-    if not strokes:
-        print("[make_lineart_svg] no strokes found", file=sys.stderr)
-        sys.exit(1)
+    img_w = OUT_W - PAD * 2
+    # Render at 2x then fit for crisp lines on HiDPI
+    hi = fit_portrait(raw, img_w * 2, IMG_MAX_H * 2)
+    rgba = lineart_to_red_rgba(hi)
+    rgba = fit_portrait(rgba, img_w, IMG_MAX_H)
+    iw, ih = rgba.size
 
-    grid_w = OUT_W - PAD * 2
-    scale = grid_w / src_w
-    grid_h = src_h * scale
-    img_x = PAD
-    img_y = CHROME_TOP + 6
-    height = int(img_y + grid_h + PAD + 8)
+    img_x = (OUT_W - iw) / 2
+    img_y = CHROME_TOP + 8
+    height = int(img_y + ih + PAD + 8)
+    b64 = encode_png(rgba)
 
-    paths: list[str] = []
-    for i, (pts, kind) in enumerate(strokes):
-        d = catmull_rom_to_bezier_path(pts, scale, scale, img_x, img_y)
-        if not d:
-            continue
-        if kind == "main":
-            stroke, width = STROKE, 1.55
-        else:
-            stroke, width = STROKE_SOFT, 1.05
-        delay = 0.05 + i * 0.012
-        length = max(
-            50,
-            int(cv2.arcLength(pts.reshape(-1, 1, 2).astype(np.float32), False) * scale),
+    anim = ""
+    if not static:
+        anim = (
+            '<animate attributeName="opacity" from="0" to="1" begin="0.08s" '
+            'dur="0.5s" fill="freeze"/>'
         )
 
-        if static:
-            paths.append(
-                f'<path d="{d}" fill="none" stroke="{stroke}" stroke-width="{width}" '
-                f'stroke-linecap="round" stroke-linejoin="round"/>'
-            )
-        else:
-            paths.append(
-                f'<path d="{d}" fill="none" stroke="{stroke}" stroke-width="{width}" '
-                f'stroke-linecap="round" stroke-linejoin="round" '
-                f'stroke-dasharray="{length}" stroke-dashoffset="0" opacity="1">'
-                f'<animate attributeName="stroke-dashoffset" from="{length}" to="0" '
-                f'begin="{delay:.3f}s" dur="0.7s" fill="freeze"/>'
-                f"</path>"
-            )
-
-    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{OUT_W}" height="{height}" viewBox="0 0 {OUT_W} {height}" role="img" aria-label="Line art portrait">
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{OUT_W}" height="{height}" viewBox="0 0 {OUT_W} {height}" role="img" aria-label="Line art portrait">
   <rect width="100%" height="100%" fill="{BG}" rx="12"/>
   <rect x="8" y="8" width="{OUT_W - 16}" height="{height - 16}" rx="10" fill="{PANEL}" stroke="{BORDER}" stroke-width="1.5"/>
   <circle cx="26" cy="28" r="5" fill="#ff5f56"/>
@@ -282,15 +115,24 @@ def main() -> None:
   <circle cx="58" cy="28" r="5" fill="#27c93f"/>
   <text x="76" y="32" fill="{MUTED}" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">portrait · line art</text>
 
-  <rect x="{img_x - 2}" y="{img_y - 2}" width="{grid_w + 4}" height="{grid_h + 4}" rx="4" fill="#0a0505" stroke="{BORDER}" stroke-opacity="0.6"/>
-  <g>
-    {"".join(paths)}
+  <defs>
+    <clipPath id="photoClip">
+      <rect x="{img_x}" y="{img_y}" width="{iw}" height="{ih}" rx="6"/>
+    </clipPath>
+  </defs>
+
+  <rect x="{img_x - 2}" y="{img_y - 2}" width="{iw + 4}" height="{ih + 4}" rx="6" fill="#0a0505" stroke="{BORDER}" stroke-opacity="0.6"/>
+  <g clip-path="url(#photoClip)" opacity="1">{anim}
+    <image x="{img_x}" y="{img_y}" width="{iw}" height="{ih}"
+           href="data:image/png;base64,{b64}"
+           xlink:href="data:image/png;base64,{b64}"
+           preserveAspectRatio="xMidYMid meet"/>
   </g>
 </svg>
 """
 
     Path(args.output).write_text(svg, encoding="utf-8")
-    print(f"[make_lineart_svg] wrote {args.output} ({len(paths)} strokes)")
+    print(f"[make_lineart_svg] wrote {args.output} ({iw}x{ih})")
 
 
 if __name__ == "__main__":
