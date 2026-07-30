@@ -37,11 +37,17 @@ PAPER = 225
 def prepare_image(img: Image.Image, lineart: bool) -> Image.Image:
     gray = ImageOps.grayscale(img)
     if lineart:
-        # Keep thin strokes sharp — no median blur
-        gray = ImageOps.autocontrast(gray, cutoff=0)
-        # Boost ink contrast
-        gray = gray.point(lambda p: 0 if p < 180 else 255)
-        return gray
+        # Thicken strokes before downsampling so lines survive the ASCII grid
+        arr = np.array(gray, dtype=np.uint8)
+        ink = arr < 200
+        # Dilate ink (morphological max-filter via min on inverted)
+        from PIL import ImageFilter as _IF
+
+        mask = Image.fromarray((~ink * 255).astype(np.uint8))  # paper=255, ink=0
+        # Erode white paper → expands black ink
+        for _ in range(2):
+            mask = mask.filter(_IF.MinFilter(size=3))
+        return mask
     gray = ImageOps.autocontrast(gray, cutoff=1)
     gray = gray.filter(ImageFilter.MedianFilter(size=3))
     return gray
@@ -129,7 +135,7 @@ def image_to_ascii(
     w, h = gray.size
     char_aspect = 0.48
     rows = max(14, int((h / w) * cols * char_aspect))
-    resized = gray.resize((cols, rows), Image.Resampling.LANCZOS)
+    resized = gray.resize((cols, rows), Image.Resampling.BOX if lineart else Image.Resampling.LANCZOS)
     bg_img = Image.fromarray((bg.astype(np.uint8) * 255))
     bg_r = np.array(bg_img.resize((cols, rows), Image.Resampling.NEAREST)) > 127
     px = resized.load()
