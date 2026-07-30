@@ -2,11 +2,11 @@
 """
 Generate animated ASCII SVG portrait (monochrome red terminal theme).
 
-Uses edge-connected flood-fill so only the true studio backdrop becomes
-empty space — light face/skin stays as dense glyphs on the dark terminal.
+For photos: lighter subject areas become denser glyphs.
+For line art (--lineart): dark ink becomes denser glyphs; paper stays empty.
 
 Usage:
-  python scripts/make_ascii_svg.py [--input source-prepped.png] [--output avi-ascii.svg]
+  python scripts/make_ascii_svg.py --input assets/lineart-source.png --lineart --output avi-ascii.svg
 
 Env:
   STATIC=1  -> disable animation (final frame only)
@@ -30,17 +30,25 @@ CURSOR = "#ff5c5c"
 
 # Pixels this bright *and* connected to the image border count as backdrop
 BG_LOOSE = 236
+# Near-white gaps between line-art strokes also stay empty
+PAPER = 225
 
 
-def prepare_image(img: Image.Image) -> Image.Image:
+def prepare_image(img: Image.Image, lineart: bool) -> Image.Image:
     gray = ImageOps.grayscale(img)
+    if lineart:
+        # Keep thin strokes sharp — no median blur
+        gray = ImageOps.autocontrast(gray, cutoff=0)
+        # Boost ink contrast
+        gray = gray.point(lambda p: 0 if p < 180 else 255)
+        return gray
     gray = ImageOps.autocontrast(gray, cutoff=1)
     gray = gray.filter(ImageFilter.MedianFilter(size=3))
     return gray
 
 
 def background_mask(gray: Image.Image) -> np.ndarray:
-    """True where studio backdrop is (near-white, flood-filled from borders)."""
+    """True where studio/paper backdrop is (near-white, flood-filled from borders)."""
     arr = np.array(gray, dtype=np.uint8)
     h, w = arr.shape
     bg = np.zeros((h, w), dtype=bool)
@@ -73,7 +81,9 @@ def background_mask(gray: Image.Image) -> np.ndarray:
     return bg
 
 
-def crop_to_subject(gray: Image.Image, bg: np.ndarray, pad: float = 0.05) -> tuple[Image.Image, np.ndarray]:
+def crop_to_subject(
+    gray: Image.Image, bg: np.ndarray, pad: float = 0.04
+) -> tuple[Image.Image, np.ndarray]:
     ys, xs = np.where(~bg)
     if len(xs) == 0:
         return gray, bg
@@ -87,20 +97,32 @@ def crop_to_subject(gray: Image.Image, bg: np.ndarray, pad: float = 0.05) -> tup
     return gray.crop((l, t, r, b)), bg[t:b, l:r]
 
 
-def subject_to_char(v: int, is_bg: bool, vmin: int, vmax: int) -> str:
+def subject_to_char(v: int, is_bg: bool, vmin: int, vmax: int, lineart: bool) -> str:
     if is_bg:
         return " "
+    if lineart and v >= PAPER:
+        return " "
+
     span = max(1, vmax - vmin)
     t = (v - vmin) / span
     t = max(0.0, min(1.0, t))
-    # Lighter face → denser glyphs (readable on dark SVG)
-    t = 0.18 + 0.82 * (t ** 0.7)
+
+    if lineart:
+        # Dark ink → dense glyphs
+        t = 1.0 - t
+        t = 0.25 + 0.75 * (t ** 0.75)
+    else:
+        # Lighter face → denser glyphs
+        t = 0.18 + 0.82 * (t ** 0.7)
+
     idx = int(t * (len(RAMP) - 1))
     return RAMP[idx]
 
 
-def image_to_ascii(img: Image.Image, cols: int = 70) -> tuple[list[str], int, int]:
-    gray = prepare_image(img)
+def image_to_ascii(
+    img: Image.Image, cols: int = 78, lineart: bool = False
+) -> tuple[list[str], int, int]:
+    gray = prepare_image(img, lineart=lineart)
     bg = background_mask(gray)
     gray, bg = crop_to_subject(gray, bg)
 
@@ -116,10 +138,10 @@ def image_to_ascii(img: Image.Image, cols: int = 70) -> tuple[list[str], int, in
         px[x, y]
         for y in range(rows)
         for x in range(cols)
-        if not bg_r[y, x]
+        if not bg_r[y, x] and (not lineart or px[x, y] < PAPER)
     ]
     if not subject_vals:
-        raise ValueError("No subject pixels found — check source photo contrast")
+        raise ValueError("No subject pixels found — check source contrast")
     subject_vals.sort()
     vmin = subject_vals[int(len(subject_vals) * 0.05)]
     vmax = subject_vals[int(len(subject_vals) * 0.95)]
@@ -129,7 +151,7 @@ def image_to_ascii(img: Image.Image, cols: int = 70) -> tuple[list[str], int, in
     lines: list[str] = []
     for y in range(rows):
         line = "".join(
-            subject_to_char(px[x, y], bool(bg_r[y, x]), vmin, vmax)
+            subject_to_char(px[x, y], bool(bg_r[y, x]), vmin, vmax, lineart)
             for x in range(cols)
         )
         lines.append(line.rstrip())
@@ -143,10 +165,10 @@ def image_to_ascii(img: Image.Image, cols: int = 70) -> tuple[list[str], int, in
 
 def make_svg(lines: list[str], cols: int, rows: int, output: str) -> None:
     static = os.getenv("STATIC", "0") == "1"
-    font_size = 10
-    line_h = 11.2
-    pad = 18
-    width = int(pad * 2 + cols * 6.4)
+    font_size = 9
+    line_h = 10.5
+    pad = 16
+    width = int(pad * 2 + cols * 5.8)
     height = int(pad * 2 + rows * line_h)
     reveal_w = width - pad * 2
 
@@ -159,9 +181,8 @@ def make_svg(lines: list[str], cols: int, rows: int, output: str) -> None:
             groups.append(f'<text x="{pad}" y="{y}" fill="{FG}">{line}</text>')
             continue
 
-        # Default clip = full width so GitHub (often no SMIL) still shows the art
         clip_id = f"clip{i}"
-        delay = i * 0.025
+        delay = i * 0.022
         defs.append(
             f'<clipPath id="{clip_id}">'
             f'<rect x="{pad}" y="{y - line_h + 2}" width="{reveal_w}" height="{line_h + 1}">'
@@ -198,22 +219,31 @@ def make_svg(lines: list[str], cols: int, rows: int, output: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate animated ASCII SVG portrait")
-    parser.add_argument("--input", default="source-prepped.png")
+    parser.add_argument("--input", default="assets/lineart-source.png")
     parser.add_argument("--output", default="avi-ascii.svg")
-    parser.add_argument("--cols", type=int, default=70)
+    parser.add_argument("--cols", type=int, default=78)
+    parser.add_argument(
+        "--lineart",
+        action="store_true",
+        default=True,
+        help="Treat input as black-on-white line art (default: on)",
+    )
+    parser.add_argument(
+        "--photo",
+        action="store_true",
+        help="Treat input as a photo (lighter areas → denser glyphs)",
+    )
     args = parser.parse_args()
+    lineart = not args.photo
 
     in_path = Path(args.input)
     if not in_path.exists():
-        print(
-            f"[make_ascii_svg] input not found: {in_path}. Run prep_photo.py first.",
-            file=sys.stderr,
-        )
+        print(f"[make_ascii_svg] input not found: {in_path}", file=sys.stderr)
         sys.exit(1)
 
     try:
         img = Image.open(in_path)
-        lines, cols, rows = image_to_ascii(img, cols=args.cols)
+        lines, cols, rows = image_to_ascii(img, cols=args.cols, lineart=lineart)
         make_svg(lines, cols, rows, args.output)
     except Exception as exc:
         print(f"[make_ascii_svg] failed: {exc}", file=sys.stderr)

@@ -9,16 +9,16 @@ somil2113@github ~ $ cat contrib-heatmap.svg
 <br/><br/>
 
 ```text
-somil2113@github ~ $ neofetch && cat portrait-lineart.svg
+somil2113@github ~ $ neofetch && cat avi-ascii.svg
 ```
 
 <table>
   <tr>
     <td valign="top">
-      <img src="./portrait-lineart.svg?v=5" width="370" />
+      <img src="./avi-ascii.svg?v=5" width="370" />
     </td>
     <td valign="top">
-      <img src="./info-card.svg?v=7" width="490" />
+      <img src="./info-card.svg?v=8" width="490" />
     </td>
   </tr>
 </table>
