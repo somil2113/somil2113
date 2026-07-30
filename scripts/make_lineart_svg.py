@@ -72,130 +72,114 @@ def encode_png(img: Image.Image) -> str:
 
 def silhouette_path(gray: Image.Image, ox: float, oy: float, scale_x: float, scale_y: float) -> tuple[str, float]:
     """
-    Build an SVG path for the outer silhouette of the drawn figure.
+    Build an SVG path from the true outer ink envelope of the drawing.
 
-    Dilates ink, keeps all meaningful stroke components (so outer jacket
-    edges aren't dropped), then traces the external contour. The bottom-left
-    path is further pushed out to the true leftmost ink so it doesn't cut
-    inside the jacket folds.
+    Left side = leftmost ink each row (outer jacket/sleeve).
+    Bottom = bottommost ink each column (jacket hem).
+    Right/top = rightmost / topmost ink (face + hair).
+    This avoids cutting through inner jacket folds.
     """
     arr = np.array(gray, dtype=np.uint8)
     h, w = arr.shape
+    # Slight dilate so tiny gaps in the outer stroke don't punch holes in the envelope
     ink = (arr < 200).astype(np.uint8) * 255
+    ink = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
 
-    conn = cv2.dilate(
-        ink,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
-        iterations=2,
-    )
-
-    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(conn)
-    mask = np.zeros((h, w), dtype=np.uint8)
-    min_area = max(40, int(0.0004 * w * h))
-    for i in range(1, n_labels):
-        x, y, bw, bh, area = stats[i]
-        if area < min_area:
-            continue
-        # Reject only a full-frame flood component
-        if area > 0.90 * w * h and bw > 0.95 * w and bh > 0.95 * h:
-            continue
-        mask[labels == i] = 255
-
-    if not mask.any():
+    pts = _ink_outer_envelope(ink, step=2)
+    if len(pts) < 8:
         return "", 0.0
 
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
-        iterations=2,
-    )
-
-    # Pull silhouette out to the real outer ink on the left/bottom so the
-    # path hugs the jacket rim instead of an internal fold.
-    mask = _expand_to_outer_ink(mask, ink)
-
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    if not contours:
-        return "", 0.0
-
-    contour = max(contours, key=cv2.contourArea)
-    peri = float(cv2.arcLength(contour.astype(np.float32), True))
-    pts = contour.reshape(-1, 2).astype(np.float64)
-
-    bx, by, bw, bh = cv2.boundingRect(contour)
-    if bw > 0.95 * w and bh > 0.95 * h and cv2.contourArea(contour) > 0.8 * w * h:
-        return "", 0.0
-
+    # Start at top-most point
     i0 = int(np.argmin(pts[:, 1]))
     pts = np.vstack([pts[i0:], pts[:i0]])
-    pts = _resample_closed(pts, spacing=3.5)
-    # Snap bottom-left samples to leftmost ink again after smoothing
-    pts = _snap_bottom_left_to_ink(pts, ink)
+    pts = _resample_closed(pts, spacing=3.0)
+    # Light smooth without pulling away from outer rim
+    pts = _chaikin_open_loop(pts, iterations=1)
+    pts = _resample_closed(pts, spacing=3.2)
 
+    peri = float(
+        np.linalg.norm(np.diff(np.vstack([pts, pts[:1]]), axis=0), axis=1).sum()
+    )
     path_d = _catmull_closed_to_path(pts, ox, oy, scale_x, scale_y)
     svg_peri = peri * ((scale_x + scale_y) / 2.0)
     return path_d, svg_peri
 
 
-def _expand_to_outer_ink(mask: np.ndarray, ink: np.ndarray) -> np.ndarray:
-    """Ensure leftmost/bottom ink strokes are inside the silhouette mask."""
-    h, w = mask.shape
-    out = mask.copy()
-    # For each row, if ink exists left of the mask, fill out to that ink
-    for y in range(h):
-        ink_xs = np.where(ink[y] > 0)[0]
-        mask_xs = np.where(out[y] > 0)[0]
-        if len(ink_xs) == 0:
-            continue
-        left_ink = int(ink_xs.min())
-        if len(mask_xs) == 0:
-            continue
-        left_mask = int(mask_xs.min())
-        if left_ink < left_mask:
-            # Bridge from outer ink into the figure (short horizontal fill)
-            right = min(left_mask + 2, w - 1)
-            out[y, left_ink : right + 1] = 255
-
-    # Similar for bottom rows: extend mask down to lowest ink in each column
-    # on the left half (jacket hem / sleeve bottom)
-    for x in range(0, int(w * 0.55)):
-        ink_ys = np.where(ink[:, x] > 0)[0]
-        mask_ys = np.where(out[:, x] > 0)[0]
-        if len(ink_ys) == 0 or len(mask_ys) == 0:
-            continue
-        bottom_ink = int(ink_ys.max())
-        bottom_mask = int(mask_ys.max())
-        if bottom_ink > bottom_mask:
-            out[bottom_mask : bottom_ink + 1, x] = 255
-
-    out = cv2.morphologyEx(
-        out,
-        cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
-        iterations=2,
-    )
-    return out
-
-
-def _snap_bottom_left_to_ink(pts: np.ndarray, ink: np.ndarray) -> np.ndarray:
-    """Push path points in the bottom-left region out to the outermost ink."""
+def _ink_outer_envelope(ink: np.ndarray, step: int = 2) -> np.ndarray:
+    """Closed polygon from leftmost/rightmost/topmost/bottommost ink extremes."""
     h, w = ink.shape
-    pts = pts.copy()
-    for i, (x, y) in enumerate(pts):
-        yi = int(round(y))
-        if yi < int(h * 0.62) or yi >= h:
-            continue
-        if x > w * 0.45:
-            continue
-        row = ink[yi]
-        xs = np.where(row > 0)[0]
-        if len(xs) == 0:
-            continue
-        left = float(xs.min())
-        # Only snap outward (never pull inward)
-        if left < x - 1:
-            pts[i, 0] = left
+    ys, xs = np.where(ink > 0)
+    if len(xs) == 0:
+        return np.zeros((0, 2), dtype=np.float64)
+
+    ymin, ymax = int(ys.min()), int(ys.max())
+    xmin, xmax = int(xs.min()), int(xs.max())
+
+    left: dict[int, int] = {}
+    right: dict[int, int] = {}
+    for y in range(ymin, ymax + 1):
+        cols = np.where(ink[y] > 0)[0]
+        if len(cols):
+            left[y] = int(cols.min())
+            right[y] = int(cols.max())
+
+    top: dict[int, int] = {}
+    bottom: dict[int, int] = {}
+    for x in range(xmin, xmax + 1):
+        rows = np.where(ink[:, x] > 0)[0]
+        if len(rows):
+            top[x] = int(rows.min())
+            bottom[x] = int(rows.max())
+
+    pts: list[tuple[float, float]] = []
+
+    # 1) Down the outer left rim (jacket / sleeve)
+    for y in range(ymin, ymax + 1, step):
+        if y in left:
+            pts.append((left[y], y))
+    if ymax in left and (not pts or pts[-1][1] != ymax):
+        pts.append((left[ymax], ymax))
+
+    # 2) Across the bottom hem (left → right), always on bottommost ink
+    x_bl = int(pts[-1][0]) if pts else xmin
+    for x in range(x_bl, xmax + 1, step):
+        if x in bottom:
+            pts.append((x, bottom[x]))
+    if xmax in bottom:
+        pts.append((xmax, bottom[xmax]))
+
+    # 3) Up the right profile (face / beard)
+    for y in range(ymax, ymin - 1, -step):
+        if y in right:
+            pts.append((right[y], y))
+    if ymin in right:
+        pts.append((right[ymin], ymin))
+
+    # 4) Across the top hairline (right → left)
+    x_tr = int(pts[-1][0]) if pts else xmax
+    for x in range(x_tr, xmin - 1, -step):
+        if x in top:
+            pts.append((x, top[x]))
+    if xmin in top:
+        pts.append((xmin, top[xmin]))
+
+    return np.asarray(pts, dtype=np.float64)
+
+
+def _chaikin_open_loop(pts: np.ndarray, iterations: int = 1) -> np.ndarray:
+    """Chaikin on a closed ring (treat last→first as connected)."""
+    pts = pts.reshape(-1, 2).astype(np.float64)
+    for _ in range(iterations):
+        n = len(pts)
+        if n < 3:
+            break
+        new = []
+        for i in range(n):
+            p = pts[i]
+            q = pts[(i + 1) % n]
+            new.append(0.75 * p + 0.25 * q)
+            new.append(0.25 * p + 0.75 * q)
+        pts = np.asarray(new, dtype=np.float64)
     return pts
 
 
