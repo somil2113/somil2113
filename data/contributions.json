@@ -1,43 +1,8 @@
 {
   "username": "somil2113",
-  "updated_at": "2026-08-22T07:01:15Z",
+  "updated_at": "2026-08-23T07:03:36Z",
   "source": "graphql",
   "days": [
-    {
-      "date": "2025-08-17",
-      "count": 0,
-      "level": 0
-    },
-    {
-      "date": "2025-08-18",
-      "count": 0,
-      "level": 0
-    },
-    {
-      "date": "2025-08-19",
-      "count": 0,
-      "level": 0
-    },
-    {
-      "date": "2025-08-20",
-      "count": 0,
-      "level": 0
-    },
-    {
-      "date": "2025-08-21",
-      "count": 0,
-      "level": 0
-    },
-    {
-      "date": "2025-08-22",
-      "count": 0,
-      "level": 0
-    },
-    {
-      "date": "2025-08-23",
-      "count": 0,
-      "level": 0
-    },
     {
       "date": "2025-08-24",
       "count": 0,
@@ -1855,13 +1820,18 @@
     },
     {
       "date": "2026-08-22",
+      "count": 1,
+      "level": 1
+    },
+    {
+      "date": "2026-08-23",
       "count": 0,
       "level": 0
     }
   ],
   "stats": {
-    "total": 269,
-    "current_streak": 1,
+    "total": 270,
+    "current_streak": 2,
     "longest_streak": 6,
     "best_day": {
       "date": "2026-02-07",
