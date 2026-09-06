@@ -1,43 +1,8 @@
 {
   "username": "somil2113",
-  "updated_at": "2026-09-05T10:40:04Z",
+  "updated_at": "2026-09-06T11:01:49Z",
   "source": "html",
   "days": [
-    {
-      "date": "2025-08-31",
-      "level": 0,
-      "count": 0
-    },
-    {
-      "date": "2025-09-01",
-      "level": 0,
-      "count": 0
-    },
-    {
-      "date": "2025-09-02",
-      "level": 0,
-      "count": 0
-    },
-    {
-      "date": "2025-09-03",
-      "level": 0,
-      "count": 0
-    },
-    {
-      "date": "2025-09-04",
-      "level": 0,
-      "count": 0
-    },
-    {
-      "date": "2025-09-05",
-      "level": 0,
-      "count": 0
-    },
-    {
-      "date": "2025-09-06",
-      "level": 0,
-      "count": 0
-    },
     {
       "date": "2025-09-07",
       "level": 0,
@@ -1855,6 +1820,11 @@
     },
     {
       "date": "2026-09-05",
+      "level": 0,
+      "count": 0
+    },
+    {
+      "date": "2026-09-06",
       "level": 0,
       "count": 0
     }
