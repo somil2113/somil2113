@@ -8,6 +8,6 @@
     <text x="633" y="157" font-size="10" fill="#c48a8a">Less</text>
     <rect x="665" y="147" width="11" height="11" rx="2" fill="#161b22" /><rect x="679" y="147" width="11" height="11" rx="2" fill="#3d1515" /><rect x="693" y="147" width="11" height="11" rx="2" fill="#6b1e1e" /><rect x="707" y="147" width="11" height="11" rx="2" fill="#a82a2a" /><rect x="721" y="147" width="11" height="11" rx="2" fill="#ff8a80" />
     <text x="739" y="157" font-size="10" fill="#c48a8a">More</text>
-    <text x="36" y="179" font-size="11" fill="#c48a8a">Current streak: 2 days · Longest streak: 6 days</text>
+    <text x="36" y="179" font-size="11" fill="#c48a8a">Current streak: 0 days · Longest streak: 6 days</text>
   </g>
 </svg>
